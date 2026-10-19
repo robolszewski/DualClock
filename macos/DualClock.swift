@@ -1,9 +1,11 @@
-// DualClock for macOS v1.7 - Analog clock showing Local (primary) and UTC (secondary) time.
+// DualClock for macOS v1.8 - Analog clock showing Local (primary) and UTC (secondary) time.
 // Port of the Windows/WinForms DualClock v1.5. Same face, hands, colors, date windows, and readout.
 // v1.6: One unified app. A switch in the lower-right corner changes the dial mode
 //       (replaces the separate "DualClock 12h" / "DualClock 24h" apps).
 // v1.7: Third mode "12/24": 12-hour dial with a smaller, faded inner ring of 13-24 (railway style);
 //       hands run as on the 12-hour dial, digital readout is 24-hour.
+// v1.8: Live 12-hour clock as the Dock icon while the app runs.
+//       12/24 mode swaps rings after noon: 13-23 move to the big outer ring, 1-11 to the faded inner ring.
 // Native Swift + AppKit, single file. Compile with: swiftc -O -o DualClock DualClock.swift
 //
 // Controls:
@@ -13,7 +15,8 @@
 //   Double-click .................. toggle always on top
 //   Drag anywhere ................. move the window
 //   Esc / Cmd-W ................... close (quits the app);  Cmd-Q quits
-//   Hidden test hook: DualClock --render out.png [12|dual|24]  -> 420x520 PNG at a fixed time, no window.
+//   Hidden test hook: DualClock --render out.png [12|dual|24] [pm] [icon]
+//     -> 420x520 PNG at a fixed time (11:28 AM, or 3:28 PM with pm); "icon" renders the 256x256 Dock icon.
 
 import AppKit
 
@@ -182,7 +185,7 @@ enum ClockRenderer {
         let local = ClockTime(date, localTZ)
         let utc = ClockTime(date, TimeZone(identifier: "UTC")!)
 
-        drawFace(cg, c, R, mode, zone)
+        drawFace(cg, c, R, mode, zone, local.hour >= 12)
         drawDate(cg, c, R, local, mode == .dual ? R * 0.33 : R * 0.38) // pulled in a bit to clear the inner ring
 
         // UTC hands first (underneath). Seconds are identical in every zone, so UTC gets no second hand.
@@ -207,7 +210,7 @@ enum ClockRenderer {
 
     // MARK: Face
 
-    private static func drawFace(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ mode: DialMode, _ zone: String) {
+    private static func drawFace(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ mode: DialMode, _ zone: String, _ pm: Bool) {
         let is24 = mode == .twentyFour // the 12/24 dial uses the 12-hour face plus an inner ring
         let disc = CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R)
         cg.setFillColor(faceFill.cgColor)
@@ -244,7 +247,9 @@ enum ClockRenderer {
         let fb = font(px, .bold)
         let rr = is24 ? R * 0.72 : (dual ? R * 0.745 : R * 0.73)
         for i in 0..<count {
-            let label = is24 ? i : (i == 0 ? 12 : i)
+            // 12/24 dial after noon: the 13-23 numbers take the big outer ring (12 stays on top,
+            // since the hour hand sits there from 12:00 to 12:59 PM).
+            let label = is24 ? i : (i == 0 ? 12 : (dual && pm ? i + 12 : i))
             let txt = is24 ? String(format: "%02d", label) : String(label)
             let major = is24 ? i % 6 == 0 : i % 3 == 0
             let pt = polar(c, CGFloat(i) * 360 / CGFloat(count), rr)
@@ -258,7 +263,9 @@ enum ClockRenderer {
             let faded = rgb(90, 94, 102, 150)
             let ri = R * 0.58
             for i in 0..<12 {
-                let txt = String(i == 0 ? 24 : i + 12)
+                // Inner ring holds whichever set isn't outside: 13-23 in the morning, 1-11 after noon.
+                // 24 stays on top (midnight hour, 00:00-00:59).
+                let txt = String(i == 0 ? 24 : (pm ? i : i + 12))
                 drawCentered(txt, fi, faded, polar(c, CGFloat(i) * 30, ri))
             }
         }
@@ -344,6 +351,53 @@ enum ClockRenderer {
         let botC = CGPoint(x: area.midX, y: area.minY + area.height * 0.52 + area.height * 0.45 / 2)
         drawCentered(zone + "  " + fmt(local, is24, sec), big, ink, topC)
         drawCentered("UTC  " + fmt(utc, is24, sec) + dayNote, small, utcText, botC)
+    }
+
+    // MARK: Dock icon - simplified 12-hour face (no date, labels or readout; legible at icon size)
+
+    static func drawIcon(in b: CGRect, date: Date, localTZ: TimeZone) {
+        guard let cg = NSGraphicsContext.current?.cgContext else { return }
+        cg.clear(b)
+        let R = min(b.width, b.height) / 2 * 0.90
+        let c = CGPoint(x: b.midX, y: b.midY)
+        let disc = CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R)
+
+        // Soft drop shadow so the round face sits on the Dock like other icons
+        cg.saveGState()
+        cg.setShadow(offset: CGSize(width: 0, height: R * 0.03), blur: R * 0.08,
+                     color: NSColor(white: 0, alpha: 0.35).cgColor)
+        cg.setFillColor(faceFill.cgColor)
+        cg.fillEllipse(in: disc)
+        cg.restoreGState()
+        cg.setStrokeColor(rim.cgColor)
+        cg.setLineWidth(max(1.5, R * 0.06))
+        cg.strokeEllipse(in: disc.insetBy(dx: R * 0.03, dy: R * 0.03))
+
+        // Hour ticks only
+        for i in 0..<12 {
+            let a = CGFloat(i) * 30
+            let major = i % 3 == 0
+            line(cg, polar(c, a, R * (major ? 0.74 : 0.80)), polar(c, a, R * 0.90),
+                 major ? ink : tick, max(1, R * (major ? 0.05 : 0.03)), round: false)
+        }
+
+        // Numerals 12 / 3 / 6 / 9 (all twelve would be unreadable at Dock size)
+        let f = font(R * 0.24, .bold)
+        for (i, label) in [(0, "12"), (3, "3"), (6, "6"), (9, "9")] {
+            drawCentered(label, f, ink, polar(c, CGFloat(i) * 30, R * 0.56))
+        }
+
+        let local = ClockTime(date, localTZ)
+        let utc = ClockTime(date, TimeZone(identifier: "UTC")!)
+        drawHands(cg, c, R, utc, false, utcHand, utcHand, false)
+        drawHands(cg, c, R, local, false, ink, secondRed, true)
+
+        let cap = R * 0.06
+        cg.setFillColor(ink.cgColor)
+        cg.fillEllipse(in: CGRect(x: c.x - cap, y: c.y - cap, width: cap * 2, height: cap * 2))
+        let cap2 = cap * 0.5
+        cg.setFillColor(secondRed.cgColor)
+        cg.fillEllipse(in: CGRect(x: c.x - cap2, y: c.y - cap2, width: cap2 * 2, height: cap2 * 2))
     }
 
     // MARK: Helpers
@@ -521,10 +575,36 @@ final class ClockController: NSObject, NSWindowDelegate, NSMenuItemValidation {
     func windowWillClose(_ notification: Notification) { timer?.invalidate() }
 }
 
+// MARK: - Dock icon (live 12-hour clock while the app runs)
+
+final class DockClockView: NSView {
+    override var isFlipped: Bool { return true }
+    override func draw(_ dirtyRect: NSRect) {
+        ClockRenderer.drawIcon(in: bounds, date: Date(), localTZ: TimeZone.autoupdatingCurrent)
+    }
+}
+
+final class DockClock {
+    private var timer: Timer?
+
+    func start() {
+        let tile = NSApp.dockTile
+        tile.contentView = DockClockView(frame: NSRect(origin: .zero, size: tile.size))
+        tile.display()
+        // Fire just after each whole second so the ticking second hand lands on time.
+        let next = Date(timeIntervalSinceReferenceDate: floor(Date().timeIntervalSinceReferenceDate) + 1.02)
+        let t = Timer(fire: next, interval: 1.0, repeats: true) { _ in NSApp.dockTile.display() }
+        t.tolerance = 0.05
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+}
+
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: ClockController?
+    private let dockClock = DockClock()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let ctl = ClockController()
@@ -549,6 +629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clockItem.submenu = clockMenu
 
         NSApp.mainMenu = main
+        dockClock.start()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -557,8 +638,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Test render hook
 
-func renderPNG(path: String, mode: DialMode) {
-    let w = 420, h = 520
+func renderPNG(path: String, mode: DialMode, pm: Bool = false, icon: Bool = false) {
+    let w = icon ? 256 : 420, h = icon ? 256 : 520
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
@@ -571,13 +652,17 @@ func renderPNG(path: String, mode: DialMode) {
 
     var comps = DateComponents()
     comps.year = 2026; comps.month = 10; comps.day = 15
-    comps.hour = 15; comps.minute = 28; comps.second = 42
+    comps.hour = pm ? 19 : 15; comps.minute = 28; comps.second = 42 // local 11:28 AM, or 3:28 PM with "pm"
     var cal = Calendar(identifier: .gregorian)
     cal.timeZone = TimeZone(identifier: "UTC")!
     let date = cal.date(from: comps)!
-    ClockRenderer.draw(in: CGRect(x: 0, y: 0, width: w, height: h), date: date,
-                       localTZ: TimeZone(secondsFromGMT: -4 * 3600)!, zone: "EDT",
-                       mode: mode, showSeconds: true, showDigital: true)
+    let tz = TimeZone(secondsFromGMT: -4 * 3600)!
+    if icon {
+        ClockRenderer.drawIcon(in: CGRect(x: 0, y: 0, width: w, height: h), date: date, localTZ: tz)
+    } else {
+        ClockRenderer.draw(in: CGRect(x: 0, y: 0, width: w, height: h), date: date,
+                           localTZ: tz, zone: "EDT", mode: mode, showSeconds: true, showDigital: true)
+    }
 
     NSGraphicsContext.restoreGraphicsState()
     if let data = rep.representation(using: .png, properties: [:]) {
@@ -591,8 +676,9 @@ let args = CommandLine.arguments
 _ = NSApplication.shared
 
 if args.count >= 3 && args[1] == "--render" {
-    let m: DialMode = args.count >= 4 ? (args[3] == "24" ? .twentyFour : (args[3] == "dual" ? .dual : .twelve)) : .twelve
-    renderPNG(path: args[2], mode: m)
+    let opts = Set(args.dropFirst(3))
+    let m: DialMode = opts.contains("24") ? .twentyFour : (opts.contains("dual") ? .dual : .twelve)
+    renderPNG(path: args[2], mode: m, pm: opts.contains("pm"), icon: opts.contains("icon"))
     exit(0)
 }
 
