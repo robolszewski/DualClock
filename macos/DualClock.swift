@@ -1,15 +1,16 @@
-// DualClock for macOS v1.5 - Analog clock showing Local (primary) and UTC (secondary) time.
+// DualClock for macOS v1.6 - Analog clock showing Local (primary) and UTC (secondary) time.
 // Port of the Windows/WinForms DualClock v1.5. Same face, hands, colors, date windows, and readout.
+// v1.6: One unified app. A 12 | 24 switch in the lower-right corner flips the dial mode
+//       (replaces the separate "DualClock 12h" / "DualClock 24h" apps).
 // Native Swift + AppKit, single file. Compile with: swiftc -O -o DualClock DualClock.swift
 //
 // Controls:
+//   12 | 24 switch (lower right) .. click to change dial mode
 //   Right-click (or Ctrl-click) ... menu (12/24-hour dial, second hand, digital readout, always on top, quit)
 //   T ............................. toggle 12h / 24h
 //   Double-click .................. toggle always on top
 //   Drag anywhere ................. move the window
 //   Esc / Cmd-W ................... close (quits the app);  Cmd-Q quits
-//   DualClock /12  or  /24 ........ dedicated 12- or 24-hour clock (separate saved settings)
-//   The app bundles "DualClock 12h.app" / "DualClock 24h.app" set this via the Info.plist key DualClockMode.
 //   Hidden test hook: DualClock --render out.png [12|24]  -> 420x520 PNG at a fixed time, no window.
 
 import AppKit
@@ -17,9 +18,8 @@ import AppKit
 // MARK: - Settings (UserDefaults; window frame is saved by AppKit's frame autosave)
 
 final class Settings {
-    static var suffix = ""
     private let d = UserDefaults.standard
-    private func key(_ k: String) -> String { return k + Settings.suffix }
+    private func key(_ k: String) -> String { return k }
     private func bool(_ k: String, _ def: Bool) -> Bool { return d.object(forKey: key(k)) as? Bool ?? def }
 
     var use24Hour: Bool {
@@ -90,11 +90,58 @@ enum ClockRenderer {
         return (2...5).contains(abbr.count) ? abbr : "Local"
     }
 
-    static func draw(in b: CGRect, date: Date, localTZ: TimeZone, zone: String,
+    // MARK: 12 | 24 switch (lower-right corner, in its own footer strip below the readout)
+
+    static let switchW: CGFloat = 76, switchH: CGFloat = 22, switchMargin: CGFloat = 10
+    static var footerH: CGFloat { return switchH + switchMargin }
+
+    static func switchRect(in b: CGRect) -> CGRect {
+        return CGRect(x: b.maxX - switchW - switchMargin, y: b.maxY - switchH - switchMargin,
+                      width: switchW, height: switchH)
+    }
+
+    // nil = click missed the switch; false = "12" half; true = "24" half
+    static func switchHit(_ p: CGPoint, in b: CGRect) -> Bool? {
+        let r = switchRect(in: b).insetBy(dx: -4, dy: -4) // slightly forgiving hit area
+        guard r.contains(p) else { return nil }
+        return p.x >= r.midX
+    }
+
+    private static func drawSwitch(_ cg: CGContext, _ b: CGRect, _ is24: Bool) {
+        let r = switchRect(in: b)
+        let radius = r.height / 2
+        let track = CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        cg.addPath(track)
+        cg.setFillColor(faceFill.cgColor)
+        cg.fillPath()
+
+        // Selected half: dark pill
+        let half = r.width / 2
+        let sel = CGRect(x: is24 ? r.minX + half : r.minX, y: r.minY, width: half, height: r.height).insetBy(dx: 2, dy: 2)
+        let selPath = CGPath(roundedRect: sel, cornerWidth: sel.height / 2, cornerHeight: sel.height / 2, transform: nil)
+        cg.addPath(selPath)
+        cg.setFillColor(ink.cgColor)
+        cg.fillPath()
+
+        cg.addPath(track)
+        cg.setStrokeColor(tick.cgColor)
+        cg.setLineWidth(1)
+        cg.strokePath()
+
+        let f = font(12, .semibold, mono: true)
+        drawCentered("12h", f, is24 ? softNum : faceFill, CGPoint(x: r.minX + half / 2, y: r.midY))
+        drawCentered("24h", f, is24 ? faceFill : softNum, CGPoint(x: r.minX + half * 1.5, y: r.midY))
+    }
+
+    static func draw(in full: CGRect, date: Date, localTZ: TimeZone, zone: String,
                      is24: Bool, showSeconds: Bool, showDigital: Bool) {
         guard let cg = NSGraphicsContext.current?.cgContext else { return }
         cg.setFillColor(background.cgColor)
-        cg.fill(b)
+        cg.fill(full)
+        drawSwitch(cg, full, is24)
+
+        // Clock and readout lay out in the space above the switch strip
+        let b = CGRect(x: full.minX, y: full.minY, width: full.width, height: full.height - footerH)
 
         let digitalH: CGFloat = showDigital ? max(54, floor(b.height / 7)) : 0
         let pad = max(10, floor(min(b.width, b.height) / 30))
@@ -321,8 +368,25 @@ final class ClockView: NSView {
     }
 
     override func mouseDown(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        if let want24 = ClockRenderer.switchHit(p, in: bounds) {
+            // Clicking either half selects it; clicking the already-selected half flips it.
+            let s = controller?.settings
+            if let s = s, s.use24Hour == want24 { controller?.toggleFormat(nil) }
+            else if want24 { controller?.set24(nil) } else { controller?.set12(nil) }
+            return
+        }
         if e.clickCount == 2 { controller?.toggleTopMost(nil) }
         else { window?.performDrag(with: e) }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(ClockRenderer.switchRect(in: bounds), cursor: .pointingHand)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        window?.invalidateCursorRects(for: self)
     }
 }
 
@@ -334,28 +398,25 @@ final class ClockController: NSObject, NSWindowDelegate, NSMenuItemValidation {
     let view = ClockView()
     private var timer: Timer?
 
-    init(forced: Int) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 450),
+    override init() {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 480),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         super.init()
-        if forced == 12 { settings.use24Hour = false }
-        if forced == 24 { settings.use24Hour = true }
 
         window.title = "Dual Clock - Local / UTC"
         window.backgroundColor = ClockRenderer.background
-        window.contentMinSize = NSSize(width: 220, height: 240)
+        window.contentMinSize = NSSize(width: 220, height: 270)
         window.isReleasedWhenClosed = false
         window.contentView = view
         window.delegate = self
         view.controller = self
 
-        // Restore saved frame; otherwise top-right of the primary screen (24h clock sits left of the 12h one).
-        let name = "DualClockWindow" + Settings.suffix
+        // Restore saved frame; otherwise top-right of the primary screen.
+        let name = "DualClockMainWindow"
         if !window.setFrameUsingName(name), let vf = (NSScreen.screens.first ?? NSScreen.main)?.visibleFrame {
             let fw = window.frame.width, fh = window.frame.height
-            let shift: CGFloat = forced == 24 ? fw + 10 : 0
-            window.setFrameOrigin(NSPoint(x: vf.maxX - fw - 20 - shift, y: vf.maxY - fh - 20))
+            window.setFrameOrigin(NSPoint(x: vf.maxX - fw - 20, y: vf.maxY - fh - 20))
         }
         window.setFrameAutosaveName(name)
         window.level = settings.topMost ? .floating : .normal
@@ -418,13 +479,10 @@ final class ClockController: NSObject, NSWindowDelegate, NSMenuItemValidation {
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let forced: Int
     private var controller: ClockController?
 
-    init(forced: Int) { self.forced = forced }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let ctl = ClockController(forced: forced)
+        let ctl = ClockController()
         controller = ctl
 
         let main = NSMenu()
@@ -492,17 +550,7 @@ if args.count >= 3 && args[1] == "--render" {
     exit(0)
 }
 
-var forced = 0
-for a in args.dropFirst() {
-    let x = a.trimmingCharacters(in: CharacterSet(charactersIn: "/-"))
-    if x == "12" { forced = 12 } else if x == "24" { forced = 24 }
-}
-if forced == 0, let m = Bundle.main.object(forInfoDictionaryKey: "DualClockMode") as? String {
-    forced = Int(m) ?? 0
-}
-if forced != 0 { Settings.suffix = "-" + String(forced) }
-
-let delegate = AppDelegate(forced: forced)
+let delegate = AppDelegate()
 NSApplication.shared.delegate = delegate
 NSApplication.shared.setActivationPolicy(.regular)
 NSApplication.shared.run()
