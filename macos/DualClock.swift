@@ -1,19 +1,41 @@
-// DualClock for macOS v1.6 - Analog clock showing Local (primary) and UTC (secondary) time.
+// DualClock for macOS v1.7 - Analog clock showing Local (primary) and UTC (secondary) time.
 // Port of the Windows/WinForms DualClock v1.5. Same face, hands, colors, date windows, and readout.
-// v1.6: One unified app. A 12 | 24 switch in the lower-right corner flips the dial mode
+// v1.6: One unified app. A switch in the lower-right corner changes the dial mode
 //       (replaces the separate "DualClock 12h" / "DualClock 24h" apps).
+// v1.7: Third mode "12/24": 12-hour dial with a smaller, faded inner ring of 13-24 (railway style);
+//       hands run as on the 12-hour dial, digital readout is 24-hour.
 // Native Swift + AppKit, single file. Compile with: swiftc -O -o DualClock DualClock.swift
 //
 // Controls:
-//   12 | 24 switch (lower right) .. click to change dial mode
-//   Right-click (or Ctrl-click) ... menu (12/24-hour dial, second hand, digital readout, always on top, quit)
-//   T ............................. toggle 12h / 24h
+//   12h | 12/24 | 24h switch ...... click (lower right) to change dial mode
+//   Right-click (or Ctrl-click) ... menu (dial mode, second hand, digital readout, always on top, quit)
+//   T ............................. cycle 12h -> 12/24 -> 24h
 //   Double-click .................. toggle always on top
 //   Drag anywhere ................. move the window
 //   Esc / Cmd-W ................... close (quits the app);  Cmd-Q quits
-//   Hidden test hook: DualClock --render out.png [12|24]  -> 420x520 PNG at a fixed time, no window.
+//   Hidden test hook: DualClock --render out.png [12|dual|24]  -> 420x520 PNG at a fixed time, no window.
 
 import AppKit
+
+// MARK: - Dial modes
+
+enum DialMode: Int {
+    case twelve = 0      // 1-12 dial, 12-hour readout
+    case dual = 1        // 1-12 dial with an inner 13-24 ring (railway style), 24-hour readout
+    case twentyFour = 2  // 00-23 dial, hour hand turns once a day, 24-hour readout
+
+    var handsUse24: Bool { return self == .twentyFour }
+    var readoutUse24: Bool { return self != .twelve }
+    var next: DialMode { return DialMode(rawValue: (rawValue + 1) % 3)! }
+    var switchLabel: String {
+        switch self {
+        case .twelve: return "12h"
+        case .dual: return "12/24"
+        case .twentyFour: return "24h"
+        }
+    }
+    static let all: [DialMode] = [.twelve, .dual, .twentyFour]
+}
 
 // MARK: - Settings (UserDefaults; window frame is saved by AppKit's frame autosave)
 
@@ -22,9 +44,12 @@ final class Settings {
     private func key(_ k: String) -> String { return k }
     private func bool(_ k: String, _ def: Bool) -> Bool { return d.object(forKey: key(k)) as? Bool ?? def }
 
-    var use24Hour: Bool {
-        get { return bool("Use24Hour", false) }
-        set { d.set(newValue, forKey: key("Use24Hour")) }
+    var dialMode: DialMode {
+        get {
+            if let n = d.object(forKey: key("DialMode")) as? Int, let m = DialMode(rawValue: n) { return m }
+            return bool("Use24Hour", false) ? .twentyFour : .twelve // carry over a v1.6 setting
+        }
+        set { d.set(newValue.rawValue, forKey: key("DialMode")) }
     }
     var topMost: Bool {
         get { return bool("TopMost", false) }
@@ -90,9 +115,10 @@ enum ClockRenderer {
         return (2...5).contains(abbr.count) ? abbr : "Local"
     }
 
-    // MARK: 12 | 24 switch (lower-right corner, in its own footer strip below the readout)
+    // MARK: 12h | 12/24 | 24h switch (lower-right corner, in its own footer strip below the readout)
 
-    static let switchW: CGFloat = 76, switchH: CGFloat = 22, switchMargin: CGFloat = 10
+    static let segW: CGFloat = 44, switchH: CGFloat = 22, switchMargin: CGFloat = 10
+    static var switchW: CGFloat { return segW * CGFloat(DialMode.all.count) }
     static var footerH: CGFloat { return switchH + switchMargin }
 
     static func switchRect(in b: CGRect) -> CGRect {
@@ -100,14 +126,15 @@ enum ClockRenderer {
                       width: switchW, height: switchH)
     }
 
-    // nil = click missed the switch; false = "12" half; true = "24" half
-    static func switchHit(_ p: CGPoint, in b: CGRect) -> Bool? {
-        let r = switchRect(in: b).insetBy(dx: -4, dy: -4) // slightly forgiving hit area
-        guard r.contains(p) else { return nil }
-        return p.x >= r.midX
+    // nil = click missed the switch; otherwise the segment clicked
+    static func switchHit(_ p: CGPoint, in b: CGRect) -> DialMode? {
+        let r = switchRect(in: b)
+        guard r.insetBy(dx: -4, dy: -4).contains(p) else { return nil } // slightly forgiving hit area
+        let i = Int((p.x - r.minX) / segW)
+        return DialMode.all[max(0, min(DialMode.all.count - 1, i))]
     }
 
-    private static func drawSwitch(_ cg: CGContext, _ b: CGRect, _ is24: Bool) {
+    private static func drawSwitch(_ cg: CGContext, _ b: CGRect, _ mode: DialMode) {
         let r = switchRect(in: b)
         let radius = r.height / 2
         let track = CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil)
@@ -115,9 +142,9 @@ enum ClockRenderer {
         cg.setFillColor(faceFill.cgColor)
         cg.fillPath()
 
-        // Selected half: dark pill
-        let half = r.width / 2
-        let sel = CGRect(x: is24 ? r.minX + half : r.minX, y: r.minY, width: half, height: r.height).insetBy(dx: 2, dy: 2)
+        // Selected segment: dark pill
+        let idx = DialMode.all.firstIndex(of: mode) ?? 0
+        let sel = CGRect(x: r.minX + segW * CGFloat(idx), y: r.minY, width: segW, height: r.height).insetBy(dx: 2, dy: 2)
         let selPath = CGPath(roundedRect: sel, cornerWidth: sel.height / 2, cornerHeight: sel.height / 2, transform: nil)
         cg.addPath(selPath)
         cg.setFillColor(ink.cgColor)
@@ -128,17 +155,19 @@ enum ClockRenderer {
         cg.setLineWidth(1)
         cg.strokePath()
 
-        let f = font(12, .semibold, mono: true)
-        drawCentered("12h", f, is24 ? softNum : faceFill, CGPoint(x: r.minX + half / 2, y: r.midY))
-        drawCentered("24h", f, is24 ? faceFill : softNum, CGPoint(x: r.minX + half * 1.5, y: r.midY))
+        let f = font(11, .semibold, mono: true)
+        for (i, m) in DialMode.all.enumerated() {
+            let center = CGPoint(x: r.minX + segW * (CGFloat(i) + 0.5), y: r.midY)
+            drawCentered(m.switchLabel, f, m == mode ? faceFill : softNum, center)
+        }
     }
 
     static func draw(in full: CGRect, date: Date, localTZ: TimeZone, zone: String,
-                     is24: Bool, showSeconds: Bool, showDigital: Bool) {
+                     mode: DialMode, showSeconds: Bool, showDigital: Bool) {
         guard let cg = NSGraphicsContext.current?.cgContext else { return }
         cg.setFillColor(background.cgColor)
         cg.fill(full)
-        drawSwitch(cg, full, is24)
+        drawSwitch(cg, full, mode)
 
         // Clock and readout lay out in the space above the switch strip
         let b = CGRect(x: full.minX, y: full.minY, width: full.width, height: full.height - footerH)
@@ -153,12 +182,12 @@ enum ClockRenderer {
         let local = ClockTime(date, localTZ)
         let utc = ClockTime(date, TimeZone(identifier: "UTC")!)
 
-        drawFace(cg, c, R, is24, zone)
-        drawDate(cg, c, R, local)
+        drawFace(cg, c, R, mode, zone)
+        drawDate(cg, c, R, local, mode == .dual ? R * 0.33 : R * 0.38) // pulled in a bit to clear the inner ring
 
         // UTC hands first (underneath). Seconds are identical in every zone, so UTC gets no second hand.
-        drawHands(cg, c, R, utc, is24, utcHand, utcHand, false)
-        drawHands(cg, c, R, local, is24, ink, secondRed, showSeconds)
+        drawHands(cg, c, R, utc, mode.handsUse24, utcHand, utcHand, false)
+        drawHands(cg, c, R, local, mode.handsUse24, ink, secondRed, showSeconds)
 
         // Center cap
         let cap = R * 0.045
@@ -172,13 +201,14 @@ enum ClockRenderer {
 
         if showDigital {
             let area = CGRect(x: b.minX, y: c.y + R + pad * 0.5, width: b.width, height: digitalH)
-            drawDigital(area, local, utc, zone, is24, showSeconds)
+            drawDigital(area, local, utc, zone, mode.readoutUse24, showSeconds)
         }
     }
 
     // MARK: Face
 
-    private static func drawFace(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ is24: Bool, _ zone: String) {
+    private static func drawFace(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ mode: DialMode, _ zone: String) {
+        let is24 = mode == .twentyFour // the 12/24 dial uses the 12-hour face plus an inner ring
         let disc = CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R)
         cg.setFillColor(faceFill.cgColor)
         cg.fillEllipse(in: disc)
@@ -207,16 +237,30 @@ enum ClockRenderer {
 
         // Numerals
         let count = is24 ? 24 : 12
-        let px = is24 ? R * 0.105 : R * 0.16
+        // 12/24 dial: main numerals slightly smaller and further out to make room for the inner ring
+        let dual = mode == .dual
+        let px = is24 ? R * 0.105 : (dual ? R * 0.14 : R * 0.16)
         let f = font(px, .regular)
         let fb = font(px, .bold)
-        let rr = is24 ? R * 0.72 : R * 0.73
+        let rr = is24 ? R * 0.72 : (dual ? R * 0.745 : R * 0.73)
         for i in 0..<count {
             let label = is24 ? i : (i == 0 ? 12 : i)
             let txt = is24 ? String(format: "%02d", label) : String(label)
             let major = is24 ? i % 6 == 0 : i % 3 == 0
             let pt = polar(c, CGFloat(i) * 360 / CGFloat(count), rr)
             drawCentered(txt, major ? fb : f, major ? ink : softNum, pt)
+        }
+
+        // 12/24 dial: inner ring of 13-24, smaller and faded, just inside each main numeral
+        // (13 inside 1, ... 24 inside 12), like a railway-station clock.
+        if dual {
+            let fi = font(R * 0.08, .regular)
+            let faded = rgb(90, 94, 102, 150)
+            let ri = R * 0.58
+            for i in 0..<12 {
+                let txt = String(i == 0 ? 24 : i + 12)
+                drawCentered(txt, fi, faded, polar(c, CGFloat(i) * 30, ri))
+            }
         }
 
         // Legend on the dial
@@ -227,10 +271,9 @@ enum ClockRenderer {
 
     // MARK: Date windows (local date; drawn before the hands so the hands sweep over them)
 
-    private static func drawDate(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ t: ClockTime) {
+    private static func drawDate(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ t: ClockTime, _ off: CGFloat) {
         let mon = months[max(0, min(11, t.month - 1))]
         let day = String(format: "%02d", t.day)
-        let off = R * 0.38
         let f = font(R * 0.085, .bold, mono: true)
         let attrs: [NSAttributedString.Key: Any] = [.font: f]
         // Fixed-size windows (sized for "MMM" / "00") so the boxes never change size
@@ -355,7 +398,7 @@ final class ClockView: NSView {
         let now = Date()
         let tz = TimeZone.autoupdatingCurrent
         ClockRenderer.draw(in: bounds, date: now, localTZ: tz, zone: ClockRenderer.zoneAbbrev(tz, at: now),
-                           is24: s.use24Hour, showSeconds: s.showSeconds, showDigital: s.showDigital)
+                           mode: s.dialMode, showSeconds: s.showSeconds, showDigital: s.showDigital)
     }
 
     override func keyDown(with e: NSEvent) {
@@ -369,11 +412,8 @@ final class ClockView: NSView {
 
     override func mouseDown(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
-        if let want24 = ClockRenderer.switchHit(p, in: bounds) {
-            // Clicking either half selects it; clicking the already-selected half flips it.
-            let s = controller?.settings
-            if let s = s, s.use24Hour == want24 { controller?.toggleFormat(nil) }
-            else if want24 { controller?.set24(nil) } else { controller?.set12(nil) }
+        if let m = ClockRenderer.switchHit(p, in: bounds) {
+            controller?.setMode(m)
             return
         }
         if e.clickCount == 2 { controller?.toggleTopMost(nil) }
@@ -438,6 +478,7 @@ final class ClockController: NSObject, NSWindowDelegate, NSMenuItemValidation {
             m.addItem(i)
         }
         add("12-hour dial", #selector(ClockController.set12(_:)))
+        add("12-hour dial with 13-24 ring", #selector(ClockController.setDual(_:)))
         add("24-hour dial", #selector(ClockController.set24(_:)))
         m.addItem(.separator())
         add("Show second hand", #selector(ClockController.toggleSeconds(_:)))
@@ -452,17 +493,21 @@ final class ClockController: NSObject, NSWindowDelegate, NSMenuItemValidation {
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let a = item.action
-        if a == #selector(set12(_:)) { item.state = settings.use24Hour ? .off : .on }
-        else if a == #selector(set24(_:)) { item.state = settings.use24Hour ? .on : .off }
+        let m = settings.dialMode
+        if a == #selector(set12(_:)) { item.state = m == .twelve ? .on : .off }
+        else if a == #selector(setDual(_:)) { item.state = m == .dual ? .on : .off }
+        else if a == #selector(set24(_:)) { item.state = m == .twentyFour ? .on : .off }
         else if a == #selector(toggleSeconds(_:)) { item.state = settings.showSeconds ? .on : .off }
         else if a == #selector(toggleDigital(_:)) { item.state = settings.showDigital ? .on : .off }
         else if a == #selector(toggleTopMost(_:)) { item.state = settings.topMost ? .on : .off }
         return true
     }
 
-    @objc func set12(_ sender: Any?) { settings.use24Hour = false; changed() }
-    @objc func set24(_ sender: Any?) { settings.use24Hour = true; changed() }
-    @objc func toggleFormat(_ sender: Any?) { settings.use24Hour.toggle(); changed() }
+    func setMode(_ m: DialMode) { settings.dialMode = m; changed() }
+    @objc func set12(_ sender: Any?) { setMode(.twelve) }
+    @objc func setDual(_ sender: Any?) { setMode(.dual) }
+    @objc func set24(_ sender: Any?) { setMode(.twentyFour) }
+    @objc func toggleFormat(_ sender: Any?) { setMode(settings.dialMode.next) } // T key: cycles 12h -> 12/24 -> 24h
     @objc func toggleSeconds(_ sender: Any?) { settings.showSeconds.toggle(); changed() }
     @objc func toggleDigital(_ sender: Any?) { settings.showDigital.toggle(); changed() }
     @objc func toggleTopMost(_ sender: Any?) {
@@ -512,7 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Test render hook
 
-func renderPNG(path: String, is24: Bool) {
+func renderPNG(path: String, mode: DialMode) {
     let w = 420, h = 520
     guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -532,7 +577,7 @@ func renderPNG(path: String, is24: Bool) {
     let date = cal.date(from: comps)!
     ClockRenderer.draw(in: CGRect(x: 0, y: 0, width: w, height: h), date: date,
                        localTZ: TimeZone(secondsFromGMT: -4 * 3600)!, zone: "EDT",
-                       is24: is24, showSeconds: true, showDigital: true)
+                       mode: mode, showSeconds: true, showDigital: true)
 
     NSGraphicsContext.restoreGraphicsState()
     if let data = rep.representation(using: .png, properties: [:]) {
@@ -546,7 +591,8 @@ let args = CommandLine.arguments
 _ = NSApplication.shared
 
 if args.count >= 3 && args[1] == "--render" {
-    renderPNG(path: args[2], is24: args.count >= 4 && args[3] == "24")
+    let m: DialMode = args.count >= 4 ? (args[3] == "24" ? .twentyFour : (args[3] == "dual" ? .dual : .twelve)) : .twelve
+    renderPNG(path: args[2], mode: m)
     exit(0)
 }
 
