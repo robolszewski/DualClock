@@ -37,7 +37,7 @@ The local and UTC hands share identical geometry, so in whole-hour time zones th
 
 ## Versions
 
-Releases are tagged (`windows-v1.5`, `macos-v1.5`, `macos-v1.9`, `ios-v2.0`). `docs/Windows-RebuildPrompt.md` contains the full Windows v1.5 spec.
+Each release is its own commit (Windows v1.5 → macOS v1.5 → macOS v1.9 → iOS v2.0), so `git log` shows the history and diffs. `docs/Windows-RebuildPrompt.md` contains the full Windows v1.5 spec.
 
 ## License
 
