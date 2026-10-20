@@ -1,0 +1,19 @@
+# Build output
+*.exe
+*.lnk
+*.app/
+DualClock.bin
+*.iconset/
+*.icns
+
+# Xcode / Swift Playgrounds
+.build/
+.swiftpm/xcode/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# OS clutter
+.DS_Store
+Thumbs.db
+desktop.ini
