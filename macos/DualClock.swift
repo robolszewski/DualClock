@@ -1,4 +1,4 @@
-// DualClock for macOS v1.9 - Analog clock showing Local (primary) and UTC (secondary) time.
+// DualClock for macOS v2.2 - Analog clock showing Local (primary) and UTC (secondary) time.
 // Port of the Windows/WinForms DualClock v1.5. Same face, hands, colors, date windows, and readout.
 // v1.6: One unified app. A switch in the lower-right corner changes the dial mode
 //       (replaces the separate "DualClock 12h" / "DualClock 24h" apps).
@@ -8,6 +8,10 @@
 //       12/24 mode swaps rings after noon: 13-23 move to the big outer ring, 1-11 to the faded inner ring.
 // v1.9: "Two Hands" app icon (dark tile, white face, ink + blue UTC hour hands) - permanent .icns
 //       generated at build time, and the live Dock clock now uses the same design.
+// v2.2: Layout and accessibility from iOS v2.0 / watchOS v2.1: wide windows put the readout beside the
+//       clock, tall windows center the clock vertically, the readout shrinks to fit narrow windows,
+//       and VoiceOver reads both times. 12/24 mode: the top 12 and 24 now swap too (at 13:00).
+//       12h dial: sun (AM) / crescent moon (PM) beside the zone label, and beside UTC when it differs.
 // Native Swift + AppKit, single file. Compile with: swiftc -O -o DualClock DualClock.swift
 //
 // Controls:
@@ -174,20 +178,46 @@ enum ClockRenderer {
         cg.fill(full)
         drawSwitch(cg, full, mode)
 
-        // Clock and readout lay out in the space above the switch strip
-        let b = CGRect(x: full.minX, y: full.minY, width: full.width, height: full.height - footerH)
+        // Layout (same as iOS). Tall: clock above readout, both above the switch strip, centered vertically.
+        // Wide: clock on the left at full height, readout centered in the right column.
+        let wide = full.width > full.height * 1.25
+        let c: CGPoint
+        let R: CGFloat
+        var digitalArea: CGRect? = nil
 
-        let digitalH: CGFloat = showDigital ? max(54, floor(b.height / 7)) : 0
-        let pad = max(10, floor(min(b.width, b.height) / 30))
-        let size = min(b.width - 2 * pad, b.height - digitalH - 2 * pad)
-        if size < 50 { return }
-        let R = size / 2
-        let c = CGPoint(x: b.midX, y: b.minY + pad + R)
+        if wide {
+            let cw = showDigital ? min(full.width * 0.6, full.height) : full.width
+            let colH = showDigital ? full.height : full.height - footerH
+            let area = CGRect(x: full.minX, y: full.minY, width: cw, height: colH)
+            let pad = max(10, floor(min(area.width, area.height) / 30))
+            let size = min(area.width - 2 * pad, area.height - 2 * pad)
+            if size < 50 { return }
+            R = size / 2
+            c = CGPoint(x: area.midX, y: area.midY)
+            if showDigital {
+                let right = CGRect(x: full.minX + cw, y: full.minY, width: full.width - cw, height: full.height - footerH)
+                let h = min(right.height, max(60, right.width * 0.40))
+                digitalArea = CGRect(x: right.minX + 8, y: right.midY - h / 2, width: right.width - 16 - switchMargin, height: h)
+            }
+        } else {
+            let b = CGRect(x: full.minX, y: full.minY, width: full.width, height: full.height - footerH)
+            let digitalH: CGFloat = showDigital ? max(54, floor(b.height / 7)) : 0
+            let pad = max(10, floor(min(b.width, b.height) / 30))
+            let size = min(b.width - 2 * pad, b.height - digitalH - 2 * pad)
+            if size < 50 { return }
+            R = size / 2
+            let slack = max(0, b.height - (size + 2 * pad + digitalH))
+            c = CGPoint(x: b.midX, y: b.minY + slack / 2 + pad + R)
+            if showDigital {
+                digitalArea = CGRect(x: b.minX + pad, y: c.y + R + pad * 0.5, width: b.width - 2 * pad, height: digitalH)
+            }
+        }
 
         let local = ClockTime(date, localTZ)
         let utc = ClockTime(date, TimeZone(identifier: "UTC")!)
 
-        drawFace(cg, c, R, mode, zone, local.hour >= 12)
+        drawFace(cg, c, R, mode, zone, local.hour)
+        if mode == .twelve { drawMeridiem(cg, c, R, zone, local.hour, utc.hour) }
         drawDate(cg, c, R, local, mode == .dual ? R * 0.33 : R * 0.38) // pulled in a bit to clear the inner ring
 
         // UTC hands first (underneath). Seconds are identical in every zone, so UTC gets no second hand.
@@ -204,15 +234,17 @@ enum ClockRenderer {
             cg.fillEllipse(in: CGRect(x: c.x - cap2, y: c.y - cap2, width: cap2 * 2, height: cap2 * 2))
         }
 
-        if showDigital {
-            let area = CGRect(x: b.minX, y: c.y + R + pad * 0.5, width: b.width, height: digitalH)
+        if let area = digitalArea {
             drawDigital(area, local, utc, zone, mode.readoutUse24, showSeconds)
         }
     }
 
     // MARK: Face
 
-    private static func drawFace(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ mode: DialMode, _ zone: String, _ pm: Bool) {
+    private static func drawFace(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ mode: DialMode, _ zone: String, _ hour: Int) {
+        // 12/24 dial: 1-11 swap with 13-23 at noon; the top pair (12 / 24) swaps at 13:00, so the outer
+        // ring reads 12 while the hour hand is there (12:00-12:59) and 24 after that.
+        let pm = hour >= 12, topSwap = hour >= 13
         let is24 = mode == .twentyFour // the 12/24 dial uses the 12-hour face plus an inner ring
         let disc = CGRect(x: c.x - R, y: c.y - R, width: 2 * R, height: 2 * R)
         cg.setFillColor(faceFill.cgColor)
@@ -249,9 +281,8 @@ enum ClockRenderer {
         let fb = font(px, .bold)
         let rr = is24 ? R * 0.72 : (dual ? R * 0.745 : R * 0.73)
         for i in 0..<count {
-            // 12/24 dial after noon: the 13-23 numbers take the big outer ring (12 stays on top,
-            // since the hour hand sits there from 12:00 to 12:59 PM).
-            let label = is24 ? i : (i == 0 ? 12 : (dual && pm ? i + 12 : i))
+            // 12/24 dial after noon: the 13-23 numbers take the big outer ring; 24 joins them from 13:00.
+            let label = is24 ? i : (i == 0 ? (dual && topSwap ? 24 : 12) : (dual && pm ? i + 12 : i))
             let txt = is24 ? String(format: "%02d", label) : String(label)
             let major = is24 ? i % 6 == 0 : i % 3 == 0
             let pt = polar(c, CGFloat(i) * 360 / CGFloat(count), rr)
@@ -265,9 +296,9 @@ enum ClockRenderer {
             let faded = rgb(90, 94, 102, 150)
             let ri = R * 0.58
             for i in 0..<12 {
-                // Inner ring holds whichever set isn't outside: 13-23 in the morning, 1-11 after noon.
-                // 24 stays on top (midnight hour, 00:00-00:59).
-                let txt = String(i == 0 ? 24 : (pm ? i : i + 12))
+                // Inner ring holds whichever set isn't outside: 13-23 in the morning, 1-11 after noon;
+                // 24 on top until 13:00, then 12.
+                let txt = String(i == 0 ? (topSwap ? 12 : 24) : (pm ? i : i + 12))
                 drawCentered(txt, fi, faded, polar(c, CGFloat(i) * 30, ri))
             }
         }
@@ -276,6 +307,44 @@ enum ClockRenderer {
         let lf = font(R * 0.08, .bold)
         drawTop(zone, lf, ink, c.x, c.y - R * 0.40)
         drawTop("UTC", lf, utcText, c.x, c.y + R * 0.30)
+    }
+
+    // MARK: AM/PM symbols (12h dial only): sun = AM, crescent moon = PM, just right of the zone and UTC labels.
+    // The UTC symbol only appears when UTC is on the other side of noon from local time.
+
+    private static func drawMeridiem(_ cg: CGContext, _ c: CGPoint, _ R: CGFloat, _ zone: String, _ localHour: Int, _ utcHour: Int) {
+        let localPM = localHour >= 12, utcPM = utcHour >= 12
+        let lf = font(R * 0.08, .bold)
+        let s = lf.pointSize * 1.15                       // symbol box, a little larger than the label font
+        let midOff = lf.ascender - lf.capHeight / 2       // label top -> cap-height center
+        let wZone = (zone as NSString).size(withAttributes: [.font: lf]).width
+        symbol(cg, CGPoint(x: c.x + wZone / 2 + s * 0.62, y: c.y - R * 0.40 + midOff), s, localPM, ink)
+        if utcPM != localPM {
+            let wUtc = ("UTC" as NSString).size(withAttributes: [.font: lf]).width
+            symbol(cg, CGPoint(x: c.x + wUtc / 2 + s * 0.62, y: c.y + R * 0.30 + midOff), s, utcPM, utcText)
+        }
+    }
+
+    private static func symbol(_ cg: CGContext, _ p: CGPoint, _ s: CGFloat, _ moon: Bool, _ col: NSColor) {
+        cg.setFillColor(col.cgColor)
+        if moon {
+            // Crescent: a disc with an offset disc cut out, horns pointing right
+            let r = s * 0.42, rc = s * 0.36
+            let cut = CGRect(x: p.x - rc + s * 0.22, y: p.y - rc - s * 0.12, width: 2 * rc, height: 2 * rc)
+            cg.saveGState()
+            cg.addRect(CGRect(x: p.x - s, y: p.y - s, width: 2 * s, height: 2 * s))
+            cg.addEllipse(in: cut)
+            cg.clip(using: .evenOdd)
+            cg.fillEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+            cg.restoreGState()
+        } else {
+            // Sun: small disc with 8 short rays
+            let core = s * 0.21
+            cg.fillEllipse(in: CGRect(x: p.x - core, y: p.y - core, width: 2 * core, height: 2 * core))
+            for i in 0..<8 {
+                line(cg, polar(p, CGFloat(i) * 45, s * 0.33), polar(p, CGFloat(i) * 45, s * 0.48), col, max(1, s * 0.09), round: true)
+            }
+        }
     }
 
     // MARK: Date windows (local date; drawn before the hands so the hands sweep over them)
@@ -328,7 +397,7 @@ enum ClockRenderer {
 
     // MARK: Digital readout
 
-    private static func fmt(_ t: ClockTime, _ is24: Bool, _ sec: Bool) -> String {
+    static func fmt(_ t: ClockTime, _ is24: Bool, _ sec: Bool) -> String {
         if is24 {
             return sec ? String(format: "%02d:%02d:%02d", t.hour, t.minute, t.second)
                        : String(format: "%02d:%02d", t.hour, t.minute)
@@ -343,16 +412,24 @@ enum ClockRenderer {
 
     private static func drawDigital(_ area: CGRect, _ local: ClockTime, _ utc: ClockTime,
                                     _ zone: String, _ is24: Bool, _ sec: Bool) {
-        let px = max(10, area.height * 0.36)
-        let big = font(px, .bold, mono: true)
-        let small = font(px * 0.78, .regular, mono: true)
         var dayNote = ""
         if utc.ymd > local.ymd { dayNote = "  +1d" } else if utc.ymd < local.ymd { dayNote = "  -1d" }
+        let top = zone + "  " + fmt(local, is24, sec)
+        let bot = "UTC  " + fmt(utc, is24, sec) + dayNote
 
+        // Size to the area's height, then shrink if either line would overflow its width (narrow windows).
+        var px = max(10, area.height * 0.36)
+        let wTop = (top as NSString).size(withAttributes: [.font: font(px, .bold, mono: true)]).width
+        let wBot = (bot as NSString).size(withAttributes: [.font: font(px * 0.78, .regular, mono: true)]).width
+        let widest = max(wTop, wBot)
+        if widest > area.width, widest > 0 { px = max(8, px * area.width / widest) }
+
+        let big = font(px, .bold, mono: true)
+        let small = font(px * 0.78, .regular, mono: true)
         let topC = CGPoint(x: area.midX, y: area.minY + area.height * 0.55 / 2)
         let botC = CGPoint(x: area.midX, y: area.minY + area.height * 0.52 + area.height * 0.45 / 2)
-        drawCentered(zone + "  " + fmt(local, is24, sec), big, ink, topC)
-        drawCentered("UTC  " + fmt(utc, is24, sec) + dayNote, small, utcText, botC)
+        drawCentered(top, big, ink, topC)
+        drawCentered(bot, small, utcText, botC)
     }
 
     // MARK: App icon - "Two Hands" design (dark tile, white face, ink + translucent-blue UTC hour hands)
@@ -530,6 +607,17 @@ final class ClockView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         window?.invalidateCursorRects(for: self)
+    }
+
+    // VoiceOver reads both times.
+    override func isAccessibilityElement() -> Bool { return true }
+    override func accessibilityRole() -> NSAccessibility.Role? { return .staticText }
+    override func accessibilityLabel() -> String? {
+        let now = Date()
+        let use24 = controller?.settings.dialMode.readoutUse24 ?? false
+        let local = ClockTime(now, TimeZone.autoupdatingCurrent)
+        let utc = ClockTime(now, TimeZone(identifier: "UTC")!)
+        return "Local " + ClockRenderer.fmt(local, use24, false) + ", UTC " + ClockRenderer.fmt(utc, use24, false)
     }
 }
 

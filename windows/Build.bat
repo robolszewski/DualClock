@@ -1,6 +1,6 @@
 @echo off
-REM Builds DualClock.exe using the C# compiler built into Windows (.NET Framework 4.x).
-REM Keep this .bat in the same folder as DualClock.cs and double-click it.
+REM DualClock for Windows v2.2 - builds DualClock.exe (with its "Two Hands" icon) using the
+REM C# compiler built into Windows (.NET Framework 4.x). Keep this .bat next to DualClock.cs and double-click it.
 
 setlocal
 cd /d "%~dp0"
@@ -12,21 +12,35 @@ if not exist "%CSC%" (
   exit /b 1
 )
 
-"%CSC%" /nologo /target:winexe /optimize+ /r:System.Windows.Forms.dll /r:System.Drawing.dll /out:DualClock.exe "DualClock.cs"
-if errorlevel 1 (
-  echo.
-  echo Build failed.
-  pause
-  exit /b 1
-)
+REM Close a running copy so the exe can be replaced
+taskkill /im DualClock.exe /f >nul 2>&1
+
+set "OPTS=/nologo /target:winexe /optimize+ /r:System.Windows.Forms.dll /r:System.Drawing.dll"
+
+REM Pass 1: plain build, used only to draw the icon
+"%CSC%" %OPTS% /out:DualClock.exe DualClock.cs
+if errorlevel 1 goto fail
+DualClock.exe --make-icon DualClock.ico
+if errorlevel 1 goto fail
+
+REM Pass 2: final build with the icon embedded
+"%CSC%" %OPTS% /win32icon:DualClock.ico /out:DualClock.exe DualClock.cs
+if errorlevel 1 goto fail
 
 echo.
 echo Built DualClock.exe
 
-REM Create two shortcuts in this folder: a dedicated 12-hour clock and a dedicated 24-hour clock.
-powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell; foreach($m in '12','24'){ $s=$w.CreateShortcut((Join-Path '%~dp0' ('DualClock '+$m+'h.lnk'))); $s.TargetPath=(Join-Path '%~dp0' 'DualClock.exe'); $s.Arguments='/'+$m; $s.WorkingDirectory='%~dp0'; $s.Save() }"
-echo Created shortcuts: "DualClock 12h" and "DualClock 24h"
+REM v2.2 is one app with a 12h ^| 12/24 ^| 24h switch: replace the old per-mode shortcuts with one
+del /q "DualClock 12h.lnk" "DualClock 24h.lnk" >nul 2>&1
+powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell; $s=$w.CreateShortcut((Join-Path '%~dp0' 'DualClock.lnk')); $s.TargetPath=(Join-Path '%~dp0' 'DualClock.exe'); $s.WorkingDirectory='%~dp0'; $s.IconLocation=(Join-Path '%~dp0' 'DualClock.exe')+',0'; $s.Save()"
+echo Created shortcut: "DualClock"
 
-start "" "DualClock.exe" /12
-start "" "DualClock.exe" /24
+start "" "DualClock.exe"
 endlocal
+exit /b 0
+
+:fail
+echo.
+echo Build failed.
+pause
+exit /b 1

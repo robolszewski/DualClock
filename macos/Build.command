@@ -40,8 +40,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleDisplayName</key><string>DualClock</string>
   <key>CFBundleIconFile</key><string>DualClock</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.9</string>
-  <key>CFBundleVersion</key><string>1.9</string>
+  <key>CFBundleShortVersionString</key><string>2.2</string>
+  <key>CFBundleVersion</key><string>2.2</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>

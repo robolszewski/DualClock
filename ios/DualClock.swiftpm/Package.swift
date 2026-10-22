@@ -1,6 +1,7 @@
 // swift-tools-version: 5.9
 
-// DualClock for iPhone + iPad v2.0 - Swift Playgrounds / Xcode app package.
+// DualClock for iPhone + iPad v2.2 - Swift Playgrounds / Xcode app package.
+// v2.2: "Two Hands" app icon (same design as the macOS/Windows icon).
 // Open this .swiftpm folder in Swift Playgrounds (iPad or Mac) or Xcode 15+.
 
 import PackageDescription
@@ -16,8 +17,8 @@ let package = Package(
             name: "DualClock",
             targets: ["AppModule"],
             bundleIdentifier: "com.olszewski.DualClock",
-            displayVersion: "2.0",
-            bundleVersion: "1",
+            displayVersion: "2.2",
+            bundleVersion: "2",
             appIcon: .asset("AppIcon"),
             accentColor: .presetColor(.blue),
             supportedDeviceFamilies: [
